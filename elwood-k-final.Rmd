@@ -1,0 +1,795 @@
+---
+title: "Comparing vegetation greenness across remote sensing methods"
+author: "Kelsey Elwood"
+date: "Due: 18 December 2017"
+output: 
+    bookdown::html_document2:
+        number_sections: FALSE
+bibliography: ea-final.bib
+csl: journal-of-vegetation-science.csl
+link-citations: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      message = FALSE, 
+                      warning = FALSE)
+
+options(stringsAsFactors = FALSE)
+```
+
+```{r set-working-directory}
+setwd("/Users/elwoodk/Google_Drive/courses/earth-analytics/final-project/")
+```
+
+```{r load-libraries}
+# load packages
+library (ggplot2) # for plotting
+library(lubridate) # for time series analysis
+library(dplyr) # for data manipulation
+library(raster) # for spatial processing
+library(rgdal) # for spatial processing
+library(ggmap) # For plotting
+library(gridExtra) # To plot ggplots side-by-side
+library(scales) # Required for "date_format" function in ggplot date axes
+library(phenopix) # For analysis of phenocam imagery
+library(jpeg) # To read in jpg images
+library(rgeos) # for spatial processing
+library(sp) # for spatial processing
+library(zoo) # for time series processing
+
+
+# set strings as factors to false
+options(stringsAsFactors = FALSE)
+
+```
+
+```{r set-forest-boundary}
+# SW Corner: lat = 42.53676, long = -72.1915 
+# NE Corner: lat = 42.55320, long = -72.1694
+
+forest_boundary <- as(raster::extent(-72.1915, -72.1694, 42.53676, 42.5532), "SpatialPolygons")
+proj4string(forest_boundary) <- "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"
+
+forest_boundary2 <- data.frame(lon = c(-72.1915,
+                                       -72.1915,
+                                       -72.1694,
+                                       -72.1694),
+                               lat = c(42.53676, 
+                                       42.5532,
+                                       42.5532,
+                                       42.53676))
+
+phenocam <- data.frame(lat = 42.5420,
+                       lon = -72.1850)
+
+```
+
+```{r define-google-maps, cache = TRUE}
+# Define Google satellite map for zoomed in location
+harvardforest_map14h <- get_map(location = forest_boundary2,
+          source = "google",
+          maptype = "hybrid", 
+          crop = FALSE,
+          zoom = 14)
+
+# Extent of New England
+harvardforest_map6h <- get_map(location = forest_boundary2,
+          source = "google",
+          maptype = "hybrid", 
+          crop = FALSE,
+          zoom = 6)
+
+# Extent of Massachusetts
+harvardforest_map8t <- get_map(location = forest_boundary2,
+          source = "google",
+          maptype = "terrain", 
+          crop = FALSE,
+          zoom = 8)
+
+# Extent of United States
+harvardforest_map3t <- get_map(location = forest_boundary2,
+          source = "google",
+          maptype = "terrain", 
+          crop = FALSE,
+          zoom = 3)
+
+```
+
+```{r define-ggmaps}
+# Zoomed In
+m1 <- ggmap(harvardforest_map14h) +
+    labs(title = "c. Harvard Forest\nSpatial Extent",
+         x = "Longitute",
+         y = "Latitude")
+
+m1 <- m1 + geom_polygon(data = forest_boundary2, 
+                  aes(x = lon,
+                      y = lat),
+                  alpha = 0.1,
+                  color = "white",
+                  fill = NA)
+m1 <- m1 + geom_point(data = phenocam, 
+                  aes(x = lon,
+                      y = lat),
+                alpha = 0.8,
+                size = 15,
+                shape = "*",
+                color = "white")
+
+# New England
+m2 <- ggmap(harvardforest_map6h) +
+    labs(title = "b. Massachusetts, USA",
+         x = "Longitute",
+         y = "Latitude")
+
+m2 <- m2 + geom_point(data = phenocam, 
+                  aes(x = lon,
+                      y = lat),
+                alpha = 0.8,
+                size = 10,
+                shape = 19,
+                color = "white") +
+    geom_point(data = phenocam, 
+                  aes(x = lon,
+                      y = lat),
+                alpha = 1,
+                size = 18,
+                shape = "*",
+                color = "black")
+
+# North America
+m3 <- ggmap(harvardforest_map3t) +
+    labs(title = "a. North America",
+         x = "Longitute",
+         y = "Latitude")
+
+m3 <- m3 + geom_point(data = phenocam, 
+                  aes(x = lon,
+                      y = lat),
+                alpha = 1,
+                size = 25,
+                shape = "*")
+
+# Massachusetts
+m4 <- ggmap(harvardforest_map8t) +
+    labs(title = "b. Massachusetts, USA",
+         x = "Longitude",
+         y = "Latitude")
+
+m4 <- m4 + geom_point(data = phenocam, 
+                  aes(x = lon,
+                      y = lat),
+                alpha = 1,
+                size = 25,
+                shape = "*")
+
+
+```
+
+```{r load-summary-data}
+# The code for processing the  data is computationally intensive, so to streamline the process, we created CSV files that summarized the NDVI and/or GCC output from each remote sensing source. The code that produced the data in the CSV files are included in the markdown file named "elwood-k-final_supplementary-code". See that file for more information on the computational process.
+
+# open landsat greenness summary csv
+summary_ls <- read.csv(file = "data/ls-2016-harvard-green-summary.csv", header = TRUE)
+# change to DATE format
+summary_ls <- summary_ls %>% 
+  mutate(date = as.Date(date, format = "%Y-%m-%d"))
+
+# open modis greenness summary csv
+summary_mo <- read.csv(file = "data/modis_ndvi_values2.csv", header = TRUE)
+
+# formatting
+summary_mo <- summary_mo %>% 
+  mutate(DATE = as.Date(DATE, format = "%Y-%m-%d")) %>% # format DATE
+  dplyr::rename(date = DATE) # rename column to "date" for consistency
+
+# open PhenoCam greenness summary csv
+summary_ph <- read.csv(file = "data/filtered_VI_df.csv" , header = TRUE)
+
+# formatting
+summary_ph <- summary_ph %>% 
+  mutate(doy = as.Date(doy, format = "%Y-%m-%d")) %>% # format DATE 
+  dplyr::rename(date = doy) #rename column to "date" for consistency
+```
+
+```{r create-merged-dataset-LS_MOD_PHCM} 
+
+# create new dataframe with 7 columns that merges the Landsat, Modis, and PhenoCam data sources
+full_summary <- data.frame("date" = c(summary_ls$date, # input column called "date" with source dates
+                                      summary_mo$date, 
+                                      summary_ph$date),
+                           "data_source" = c(rep("landsat", nrow(summary_ls)), # input the dates
+                                             rep("modis", nrow(summary_mo)),
+                                             rep("PhenoCam", nrow(summary_ph))),
+                           "mean_ndvi_all" = c(summary_ls$mean_ndvi, # input mean ndvi
+                                           summary_mo$MEAN, 
+                                           rep("NA", nrow(summary_ph))), # designate NA for PhenoCam 
+                           "max_ndvi_all" = c(summary_ls$max_ndvi, # input max ndvi
+                                          summary_mo$MAX, 
+                                          rep(NA, nrow(summary_ph))), # designate NA for PhenoCam 
+                           "min_ndvi_all" = c(summary_ls$min_ndvi, # input min ndvi
+                                          summary_mo$MIN, 
+                                          rep(NA, nrow(summary_ph))), # designate NA for PhenoCam 
+                           "GCC_all" = c(summary_ls$GCC, # input GCC for landsat
+                                         rep(NA, nrow(summary_mo)), # designate NA for Modis 
+                                         summary_ph$max.filtered), # input GCC for PhenoCam
+                           "GCC_pheno" = c(rep(NA, nrow(summary_ls)), # designate NA for Landsat 
+                                           rep(NA, nrow(summary_mo)), # designate NA for Modis 
+                                           summary_ph$max.filtered)) # input GCC for PhenoCam only for ggplot mapping purposes
+
+# Make sure NDVI summary stats are numeric
+full_summary$mean_ndvi <- as.numeric(full_summary$mean_ndvi)
+full_summary$max_ndvi <- as.numeric(full_summary$max_ndvi)
+full_summary$min_ndvi <- as.numeric(full_summary$min_ndvi)
+
+# Format the Date
+full_summary$date <- as.POSIXct(full_summary$date, format = "%Y-%m-%d")
+
+```
+
+```{r phenocam-filter-vi-data}
+# Load the VI file created in `extractVIs`. The default name for the file is "VI.data.Rdata"
+load("data/phenocam/VI/VI.data.Rdata")
+
+VI_df <- as.data.frame(VI.data$canopy) # To view as dataframe
+
+# Filtering the data will remove images that don't meet certain criteria
+filter_start_time <- Sys.time()
+filtered_VI <- autoFilter(data = unique(VI.data$canopy),
+                          dn=c('ri.av', 'gi.av', 'bi.av'), # the names of the columns in the VI.data file that contain the average Red, Green, and Blue (in order) digital numbers 
+                          brt = 'bri.av', # the name of the overall average brightness column. Brightness is the sum of R + G + B digital numbers
+                          filter = c("night", "max"), # The filtering methods used. "Night" removes images below a Green Chromatic Coordinate (GCC) threshold of 0.2. "Max" averages the 90th percentile GCC of a 3-day moving window. The filters are applied in order, which means that in this case, the values of "max.filter" will be the values we want to use in the rest of the analysis
+                          na.fill = FALSE, # TRUE means that NA values are replaced with interpolated values. This should be irrelevant to our data set as we should not have any NA values.
+                          plot = FALSE) # Don't plot the results
+filter_end_time <- Sys.time()
+filter_processing_time <- filter_end_time - filter_start_time
+
+```
+
+```{r phenocam-greenExplore, results = "hide", cache = TRUE}
+greenExplore_start <- Sys.time()
+# There are many ways to fit a curve to the phenology data and to extract dates. In "phenopix", there are 5 built-in methods to set a curve (called "fit") and 4 methods of extracting phenophases from the curves.
+
+# To learn more about the different curve and phenophase methods, see Filippa et al. (2016)
+
+# The code below produces a comparison of the different curve fits and phenophase methods
+
+fit_comparison <- greenExplore(filtered_VI$max.filtered)
+greenExplore_stop <- Sys.time()
+
+greenExplore_time <- greenExplore_stop - greenExplore_start
+```
+
+```{r phenocam-calculate-curve-fits-and-phenophases}
+## I chose the Elmore fitting method because it had one of the lowest RMSE values appeared to be a parsimonious curve. I chose the Klosterman phenophase method because it that clearly describes each phenophase.
+
+## elmore + klosterman
+fit_elmore_klosterman <- greenProcess(ts = filtered_VI$max.filtered,
+                                      fit = 'elmore', 
+                                      threshold = 'klosterman',
+                                      plot=FALSE)
+
+```
+
+```{r phenocam-summary-of-fits, eval=FALSE}
+summary(fit_elmore_klosterman)
+
+# Results (day of year):
+## Greenup: 127
+## Maturity: 152
+## Senescence: 284
+## Dormancy: 301
+```
+
+```{r add-seasons-to-landsat-df}
+# Results from phenocam fit output for phenophase dates (day of year):
+## Greenup: 127
+## Maturity: 152
+## Senescence: 284
+## Dormancy: 301
+
+# Convert thresholds to dates:
+Greenup <- 127
+Maturity <- 152
+Senescence <- 284
+Dormancy <- 301
+
+Greenup_date <- as.Date(Greenup, origin = "2015-12-31")
+Maturity_date <- as.Date(Maturity, origin = "2015-12-31")
+Senescence_date <- as.Date(Senescence, origin = "2015-12-31")
+Dormancy_date <- as.Date(Dormancy, origin = "2015-12-31")
+
+summary_ls_w <- summary_ls %>% 
+    filter(date <= Greenup_date) %>% 
+    mutate(season = "winter")
+
+summary_ls_sp <- summary_ls %>%
+    filter(date >= Greenup_date & date <= Maturity_date) %>% 
+    mutate(season = "spring")
+
+summary_ls_su <- summary_ls %>% 
+    filter(date >= Maturity_date & date <= Senescence_date) %>% 
+    mutate(season = "summer")
+
+summary_ls_au <- summary_ls %>% 
+    filter(date >= Senescence_date) %>% 
+    mutate(season = "autumn")
+
+summary_ls2 <- rbind(summary_ls_w, summary_ls_sp, summary_ls_su, summary_ls_au)
+```
+
+```{r load-three-date-data}
+# read in MODIS pre-derived NDVI cropped regions
+april_ndvi_modis <- raster("data/comparison_images/MODIS_crops/april_ndvi.tif")
+july_ndvi_modis <- raster("data/comparison_images/MODIS_crops/july_ndvi.tif")
+nov_ndvi_modis <- raster("data/comparison_images/MODIS_crops/nov_ndvi.tif")
+
+# read in Landsat data for three months
+april_landsat <- brick("data/comparison_images/Landsat_crops/LC080130302016033001T1-SC20171108154512_cropped.tif")
+july_landsat <- brick("data/comparison_images/Landsat_crops/LC080120302016071301T1-SC20171108154538_cropped.tif")
+nov_landsat <- brick("data/comparison_images/Landsat_crops/LC080120302016111801T1-SC20171108154504_cropped.tif")
+
+# read in phenocam images
+april_pc <- jpeg::readJPEG("data/comparison_images/phenocam/harvardlph_2016_04_03_120008.jpg")
+july_pc <- jpeg::readJPEG("data/comparison_images/phenocam/harvardlph_2016_07_12_120008.jpg")
+nov_pc <- jpeg::readJPEG("data/comparison_images/phenocam/harvardlph_2016_11_17_120006.jpg")
+```
+
+```{r calculate-NDVI-landsat}
+# calculating the NDVI for the 3 Landsat months
+april_ndvi_landsat <- (april_landsat[[5]] - april_landsat[[4]]) / (april_landsat[[5]] + april_landsat[[4]])
+july_ndvi_landsat <- (july_landsat[[5]] - july_landsat[[4]]) / (july_landsat[[5]] + july_landsat[[4]])
+nov_ndvi_landsat <- (nov_landsat[[5]] - nov_landsat[[4]]) / (nov_landsat[[5]] + nov_landsat[[4]])
+```
+
+```{r plotImage-function}
+# function to plot image 
+plotImage <- function(image, ...) {
+    ncols <- ncol(image)
+    nrows <- nrow(image)
+    suppressWarnings(plot(0,
+                          type = "n", xlim = c(0, ncols), ylim = c(0, nrows), ...))
+    suppressWarnings(rasterImage(image, 
+                                 xleft = 0, 
+                                 ybottom = 0, 
+                                 xright = ncols, 
+                                 ytop = nrows, ...))
+}
+```
+
+```{r printROI2-function}
+# The following function is adapted from the built-in function "printROI" from the `phenopix` package. I didn't want the legend to print, so I adapted portions of the function code and renamed the function "printROI2". The changes I made are indicated in comments below.
+
+printROI2 <- function (path_img_ref, path_ROIs, which = "all", col, file.type = ".jpg") 
+{
+    file <- list.files(path = path_img_ref, pattern = file.type)
+    img <- readJPEG(paste(path_img_ref, file, sep = ""))
+    ratio <- dim(img)[1]/dim(img)[2]
+    rois <- paste(path_ROIs, "roi.data.Rdata", sep = "")
+    roi.data <- NULL
+    load(rois)
+    nrois <- length(roi.data)
+    roi.names <- names(roi.data)
+    par(mar = c(1, 1, 0, 1)) # Changed top margin from 4 to 0
+    plot(0, type = "n", xlim = c(0, 1), ylim = c(0, 1), axes = FALSE)
+    rasterImage(img, xleft = 0, ybottom = 0, xright = 1, ytop = ratio)
+    if (which == "all") {
+        if (missing(col)) 
+            col <- palette()[1:nrois]
+        for (a in 1:nrois) {
+            act.coords <- roi.data[[a]]$vertices
+            polygon(act.coords, border = col[a])
+        }
+        # legend("top", col = col, lty = 1, legend = roi.names) # commented out the legend option
+    }
+    else {
+        pos.roi <- which(roi.names %in% which == TRUE)
+        polygon(roi.data[[pos.roi]]$vertices)
+    }
+}
+```
+
+
+# Abstract
+
+Phenology, the timing of biological events, is a valuable tool for understanding how biological organisms respond to environmental drivers. Remote sensing methods provide a valuable tool to track plant vegetation across regional to global scales [@Justice1985]. The purpose of our study was to compare greenness curves of three remote sensing methods: MODIS, Landsat 8, and phenocams. Using data from the 2016 growing season in Harvard Forest, we calculated the normalized difference vegetation index (NDVI) for MODIS and Landsat data and the green chromatic coordinate (GCC) for phenocam data. We found that the temporal pattern of seasonal greenup and brown-down were consistent across all three methods. We compared NDVI to GCC values for Landsat and concluded that GCC does not effectively capture seasonal greenness patterns for multispectral data. Our analyses provide further insight into the advantages and disadvantages of remote sensing methods for tracking phenology, while also indicating that all three methods are valuable for phenological monitoring of plant growth.
+
+# Introduction
+
+Phenology, the timing of biological events, is a valuable tool for understanding how biological organisms respond to environmental drivers. For many organisms, phenology is driven by seasonal patterns, with patterns of biological activity repeated year after year. A deciduous tree, for example, will grow new leaves each spring then lose its leaves each autumn. While numerous factors influence plant phenology, warmer spring and winter temperatures have been found to accelerate the timing of plant growth, particularly in the spring [@Schwartz2006]. Plant phenology is a useful indicator of climate change. 
+
+Phenology is also important because of the role that species play in environmental and human systems. Phenological shifts in one species can produce phenological mismatches between that species and the rest of the ecosystem, leading to cascading ecological effects. Kudo and Ida [-@Kudo2016], for example, found that an early flowering plant species in Japan (Corydalis ambigua) was more sensitive to warmer spring temperatures than their bumblebee pollinators, leading to reduced seed development in years with earlier springs. Other studies have found phenological mismatches between plants and herbivores [e.g. @Post2003], plants and migrant birds [e.g. @Jones2010; @Clausen2013], and parasites and hosts [e.g. @Saino2009]. By changing the interactions between species, phenological mismatches can lead to shifts in trophic cascades, species coexistence, and community structure [@Nakazawa2012]. For human societies, shifts in phenology and the subsequent ecological impacts are particularly important for agricultural reasons. Shifting plant phenology may require adjustments to planting and harvest timing and may even require shifts in the type of crops grown in a given location.
+
+Traditional methods of tracking phenology involve recording the timing of important life stages of a given species. While this method is valuable for understanding phenological patterns over long periods of time, it is often limited in spatial and biological scope. Remote sensing methods, on the other hand, provide a valuable tool to track plant vegetation across regional to global scales [@Justice1985]. Remote sensing of phenology, particularly from satellite-derived sensors such as Landsat and MODIS, is a relatively easy method to track plant growth. Landsat and MODIS data are free and accessible to the public using online repositories such as EarthExplorer by the United States Geological Survey (USGS). Additionally, data from past years are available (depending on the deployment date of the satellite), which allows scientists to ask retroactive questions about phenology. The rise of remote sensing as a way to track plant phenology has led to a rapid increase in studies of phenology over recent decades [@Tang2016].
+
+Phenology from remote sensing methods is usually measured based on the change in color (i.e. reflectance) of a given vegetated area over time. The change in color is quantified using a vegetation index (VI), such as the normalized difference vegetation index (NDVI). NDVI is calculated based on the reflectance values of the red portion of the electromagnetic spectrum (appx. 0.4 to 0.7 µm) compared to the near infrared (NIR) portion of the spectrum (appx. 0.7 to 1.1 µm):
+
+$$
+NDVI = \frac{NIR - Red}{NIR + Red}
+$$
+
+NDVI is a useful metric for tracking vegetation growth because chlorophyll, the chemical in leaves essential to photosynthesis, absorbs a large portion of red light and reflects a large portion of infrared light. Areas with abundant healthy vegetation will have high NDVI values ($\geq 0.7$), while poorly vegetated areas will have low NDVI values ($\leq 0.3$).
+
+There are multiple satellites with spectral sensors that can detect surface reflectance in the red and near-infrared portions of the electromagnetic spectrum. In our analysis, we used data from Landsat 8 and MODIS. MODIS detects red light between 620 – 670 µm and NIR between 841 – 876 µm. Landsat 8 detects red light between 640 – 670 µm and NIR between 850 – 880 µm.
+
+Recently, advances in camera technology have also allowed near-surface remote sensing methods to track vegetation growth. Low cost digital cameras, hereafter referred to as “phenocams”, have been found to be effective in monitoring major phenological shifts in vegetation, including green-up, plant growth periods, and senescence [@Sonnentag2012; @Ide2013; @Anderson2016]. Phenocams are advantageous because they can provide much finer spatial and temporal resolution than satellite-based remote sensing methods. Though near-surface multispectral sensors are available that could detect individual bands of the electromagnetic spectrum, most phenocams are simple digital cameras that capture only the visible portion of the electromagnetic spectrum (RGB: red, green, and blue light). Images from phenocams are sometimes compressed into digital files, such as ".jpg", which further compromises the ability to detect individual bands of light. In digital images, each pixel is assigned three digital numbers, ranging from 0-255, that represent the brightness of red, green, and blue, respectively. The relative combination of the three colors produces the large spectrum of colors visible on digital devices. The values of the digital numbers (DN) can be used to monitor changes in the greenness of a vegetated area using a vegetation index such as the green chromatic coordinate [GCC; @Gillespie1987]. GCC is calculated as the green digital number over the overall brightness of each pixel:
+
+$$
+GCC = \frac{G_{DN}}{R_{DN} + G_{DN} + B_{DN}}
+$$
+
+where R~DN~, G~DN~, and B~DN~ represent the red, green, and blue digital numbers, respectively.
+
+The purpose of our study was to compare the seasonal greenness patterns of a deciduous, broadleaf forest as derived from Landsat, MODIS, and phenocam data. We wanted to see if the temporal patterns of greenup and brown down were consistent across all three methods, even when using different vegetation indices. We also compared NDVI to GCC values for Landsat to identify the relationship between the two indices. Our analyses provide further insight into the advantages and disadvantages of various remote sensing methods of tracking phenology, while also indicating that all three methods are valuable for phenological monitoring of plant growth.
+
+
+# Methods
+
+## Site selection
+We conducted our study using data from Harvard Forest in western Massachusetts, USA (figure \@ref(fig:plot-maps)). Harvard Forest is a 4,000 acre long term ecological research area dominated by deciduous broadleaf trees. We chose this site because deciduous forests demonstrate clear seasonal patterns with leaves budding out in the spring and falling in the autumn. Harvard Forest provided a relatively contiguous patch of deciduous forest with a long history of near-surface remote sensing.
+
+```{r plot-maps, fig.width = 8, fig.height = 3, fig.cap = "_Map of study area indicating (a) the location relative to North America, (b) the location relative to the state of Massachusetts, USA, and (c) the study area extent used to crop MODIS and Landsat 8 scenes. The white star in (c) shows the location of the phenocam._"}
+grid.arrange(m3, m4, m1,
+             ncol =3,
+             top = "Location of Harvard Forest")
+```
+
+## Data sources
+
+We used three different remote sensing methods to track phenology. Two were satellite-based: MODIS and Landsat 8, while the third method was a near-surface phenocam. 
+
+### MODIS
+
+Data from MODIS was downloaded from USGS EarthExplorer (https://earthexplorer.usgs.gov/). We used the MODIS 13Q1 product, which provided a 16-day composite scene derived by selecting pixels with low cloud cover, low view angle, and high vegetation index values over a 16 day period [@MODIS_data]. MODIS's Terra and Aqua satellites pass over a given area of earth's surface approximately every 1-2 days, which means that approximately 8 scenes were used in each 16-day composite. The MODIS 13Q1 product provided NDVI, as well as red (band 1) and near-infrared (band 2) reflectance values for each 250 m pixel (other layers of MODIS 13Q1 were available, but were not used in our analysis). To process the data, the original HD5 files from EarthExplorer were converted to geotiffs using the USGS MODIS Reprojection Tool [@MODIS_reprojection]. We downloaded one composite scene for each month of the season of interest, spanning April to December for a total of 9 MODIS scenes. The scenes were cropped to the study extent (figure \@ref(fig:plot-maps)c) and a mean NDVI for the entire scene was calculated.
+
+### Landsat 8
+
+Landsat 8 data was also downloaded from USGS EarthExplorer and included 18 scenes during the period between March 30 and November 18, 2016 [@Landsat_data]. Just as in MODIS, the scenes were cropped to the study extent (figure \@ref(fig:plot-maps)c). The Landsat scenes were then quality controlled using the QA layers provided with each scene. Pixels (30 m resolution) considered to have a medium to high confidence of clouds or water were excluded from the final evaluated scenes. If more than 20 percent of the scene included pixels removed due to clouds or water, the entire scene was excluded from analysis. The quality control process removed 5 scenes from the Landsat data set, leaving 13 total scenes.
+
+Using the spectral data of Landsat 8, we calculated both the mean NDVI and the mean of a modified GCC for each scene. Though GCC is designed for digital photographs, not spectral data, we calculated the modified GCC for landsat as the reflectance of the green divided by the sum of the reflectance for the red, green, and blue bands:
+
+$$
+GCC_{landsat} = \frac{G_{band}}{R_{band} + G_{band} + B_{band}}
+$$
+
+where R~band~, G~band~, and B~band~ represent the red, green, and blue reflectance values of each band, respectively. 
+
+### Phenocams
+
+In addition to the two satellite methods, we also used data from near-surface time-lapse cameras (i.e. phenocams). There are multiple phenocams at Harvard Forest; we chose to download data from the Harvard LPH Tower site (latitude: 42.5420, longitude: -72.1850, elevation: 380 m). The camera points northwest over a primarily deciduous forest dominated by Quercus rubra (Northern Red Oak) and Acer rubrum (Red maple). Pinus strobus (Eastern white pine), a coniferous tree species is also common at the site. We downloaded images taken between 10:00 AM and 2:00 PM (30 minute intervals) each day from April 1 through December 1, 2016 from the PhenoCam Network [https://phenocam.sr.unh.edu/webcam/sites/harvardlph/; @Phenocam_data]. A total of 2173 digital images were used in the analysis.
+
+Unlike the satellite-based sensors, the phenocams did not have reflectance values for individual bands of the electromagnetic spectrum. Instead, the imagery was compressed into a digital file (format "jpg") that captured the visible light portion of the spectrum: red, green, and blue (RGB). Without information on the near-infrared, we were unable to calculate NDVI, so instead used the GCC.
+
+```{r plot-ROI, fig.cap = "_A reference image of Harvard Forest taken by the 'harvardlph' phenocam on July 15, 2016 at 12:00 PM. The region of interest (ROI) is indicated by the white polygon. Only pixels located within the ROI were used in the analysis._"}
+# Load the ROI data
+load(file = 'phenocam/RGB/ROI/roi.data.Rdata')
+
+# Show reference image with ROI superimposed on top
+par(mfrow = c(1,1))
+printROI2(path_img_ref = 'phenocam/RGB/REF/harvardlph_2016_07_15_120007.jpg',
+         path_ROIs = 'phenocam/RGB/ROI/',
+         which = 'all',
+         col = "white") # color of the ROI lines
+par(mar = c(1,1,5,1)) # This readjusts the margins so that the title fills the white space above the image better.
+title("Region of Interest \nfor Harvard Forest Phenocam")
+```
+
+To extract GCC from the images, we followed the methods outlined in @Filippa2016, including extensive use of the `phenopix` package [@Filippa2017b] in R [@R]. The first step was to define the region of interest (ROI) within the phenocam's frame of view (figure \@ref(fig:plot-ROI)). The ROI captures the most direct view of the forest canopy and excludes the horizon. Since the frame of view of all of the images over the season was consistent, the same ROI was applied to all the images. The red, green, and blue digital numbers of the pixels were averaged across the ROI for each image using the function `phenopix::extractVIs`. The images were then filtered based on the digital numbers to exclude images below a GCC value of 0.2 (to remove dark images). The images were then  filtered again to calculate a daily value of GCC based on the 90th percentile of a 3-day moving window [@Sonnentag2012]. Further information about the processing of the phenocam data, along with the code used in the analysis, is available in the supplementary documents.
+
+## Extracting phenophases
+
+The filtered GCC values from the phenocam were used to approximate the dates of significant phenophases. There are numerous methods for approximating the greenness curve and the associated dates (figure \@ref(fig:plot-elmore-curve-klosterman-thresholds)a). We chose to extract phenophase dates using an Elmore curve with Klosterman thresholds (figure \@ref(fig:plot-elmore-curve-klosterman-thresholds)b) because the Elmore curve-fitting method had a low RMSE value and was a comparatively simple curve-fitting method. The Klosterman phenophase method was used because it most closely noted the seasonal thresholds of interest: "Greenup", "Maturity", "Senescence", and "Dormancy" [@Klosterman2014]. We determined that the date of "Greenup" indicated the start of spring, the date of "Maturity" marked the start of summer, the date of "Senescence" indicated the start of autumn, and the date of "Dormancy" marked the start of winter.
+
+```{r plot-all-fit-comparisons, fig.width= 8, fig.height = 6}
+# Set parameters for 2 stacked plots
+par(mfrow = c(2,1))
+
+# Built in plotting method for comparing fits
+plotExplore(fit_comparison)
+
+# Set parameters so that title for plot A is placed in the right location
+par(cex.main = 1.3, 
+    cex.lab = 1,
+    mar = c(0,0,1,0))
+
+title("a. Comparison of curve and phenophase fitting methods")
+
+```
+
+```{r plot-elmore-curve-klosterman-thresholds, fig.cap = "_(a) A comparison of methods to fit the overall greenness curve (fitting methods) and to extract phenophases (phenophase methods) from the Harvard Forest phenocam data. The root mean square error (RMSE) is noted for each fitting method in the upper left corner of the furthest left column. Note that the lowest RMSE values are for 'spline', 'elmore', and 'klosterman' fits. (b) For our analysis, we chose the 'elmore' fitting method combined with the 'klosterman' phenophase method to determine key phenological dates._"}
+plot(fit_elmore_klosterman, 
+     type='p', 
+     pch=20, 
+     col='grey',
+     xlab = "Day of Year",
+     ylab = "GCC",
+     main = "b. Elmore Curve with Klosterman Thresholds")
+```
+
+# Results and discussion
+
+## Overall seasonal patterns
+
+The overall seasonal patterns tracking the greenup and brown-down of the deciduous forest were very similar across all three remote-sensing methods (figure \@ref(fig:plot-overall-temporal-pattern)). Both Landsat and MODIS showed similar values in the peak of the growing season, but MODIS generally had higher values during the early and late parts of the season. Values for GCC are consistently lower than for NDVI, so it is not appropriate to compare the magnitude of greenness among the different methods. The timing of the seasonal greenup and brown down of the vegetation, however, shows similar patterns across all three methods. For all methods, plant greenness increased in the spring, sometime around mid-May to June 1. The greenness was very high throughout the growing season, until VI values started to drop around October 1.
+
+The results in figure \@ref(fig:plot-overall-temporal-pattern) also clearly show the differences in the temporal resolution of the three methods. Both satellite-derived methods had a temporal resolution of approximately 16 days (depending on cloudy days). The phenocams had a temporal resolution of 1 day (after multiple images for each day were averaged). The high frequency of images seemed particularly important during the beginning and end of the growing season, as changes in greenness occurred relatively quickly.
+
+```{r plot-overall-temporal-pattern, fig.cap = "_Seasonal pattern of greenness based on NDVI or GCC for all three remote sensing methods. NDVI for Landsat 8 (red) and MODIS (blue) are plotted along the left y-axis and GCC of the phenocams (green) are plotted along the right y-axis._"}
+
+# In order to plot two Y axis, a single dataframe is needed
+
+# Step 1: Plot the NDVI for modis and landsat (PhenoCam is NA) for the 1st Y axis
+p <- ggplot() +
+   geom_point(data = full_summary, aes(x = date, # define x axis data
+                                        y = mean_ndvi, # define left side y axis data
+                                        group = factor(data_source), # group the data by the source
+                                        colour = factor(data_source)), # define colors by data source
+              size = 4)  # set the size of the points
+
+##### It appears you don't need this step, but I thought it may be necessary to get the size to display in the legend correctly
+# Step 2: Manually define the colors and sizes for the legend
+p <- p + scale_color_manual(name = "Data Source", # set legend name
+                       labels = c("Landsat 8 NDVI", # set legend object labels
+                                 "Modis Composite NDVI",
+                                 "PhenoCAM GCC"),
+                       values = c("landsat" = "firebrick1", # set what color each data source is
+                                  "modis" = "midnightblue" ,
+                                  "PhenoCam" = "forestgreen")) +
+      scale_size_manual(name = "Data Source", # set the legend name (to merge use same as color)
+                      labels = c("Landsat 8 NDVI)", # set legend object labels
+                                 "Modis Composite NDVI",
+                                 "Phenocam GCC"),
+                      values = c("landsat" = 4, # set the size of the legend objects
+                                "modis" = 4,
+                                "PhenoCam" = 2)) +
+      guides(colour = guide_legend("Data Source"), # merge size and color legend
+             size = guide_legend("Data Source"))
+
+# Step 3: Add the second Y axis for the PhenoCam GCC data
+p <- p +  geom_point(data = full_summary, aes(x = date, # define x axis data
+                                        y = GCC_pheno, # define right side Y axis data
+                                        group = factor(data_source), # group the data by the source
+                                        colour = factor(data_source)), # define the color by the source
+                     size = 2) # set the size of the points
+
+# Step 4: Manually define the colors and sizes for the legend 
+p <- p + scale_color_manual(name = "Data Source", # set the legend name (to merge use same as color)
+                          labels = c("Landsat 8 NDVI", # set legend object labels
+                                    "Modis Composite NDVI",
+                                    "Phenocam GCC"),
+                           values = c("landsat" = "firebrick1", # set the color of the legend objects
+                                     "modis" = "midnightblue", 
+                                     "PhenoCam" = "forestgreen")) +
+          scale_size_manual(name = "Data Source", # set the legend name (to merge use same as color)
+                      labels = c("Landsat 8 NDVI)", # set legend object labels
+                                 "Modis Composite NDVI",
+                                 "Phenocam GCC"),
+                      values = c("landsat" = 4, # set the size of the legend objects
+                                "modis" = 4,
+                                "PhenoCam" = 2)) + 
+      guides(colour = guide_legend("Data Source"), 
+           size = guide_legend("Data Source"))  # merge size and color legend
+# Step 5: Add a second Y axis on the right side
+p <- p +
+    scale_y_continuous(sec.axis = sec_axis(~.,  # use current geom_point data on the second Y axis
+                                           name= "GCC (3-day 90th percentile)")) # set axis label
+# Step 6: Set the Titles and labels for plot and X and left Y axes
+p <- p +  
+    labs(title = "Vegetation Change at Harvard Forest using\nLandsat, Modis, and PhenoCam imagery", # set main title
+      subtitle = "March 30 - Dec 1, 2016", #set subtitle
+      x = "Date", # set x axis label
+      y = "Mean NDVI") # set left y axis label
+    
+# Step 7: Set the theme
+p <- p + theme_classic() # white background with open plot boundaries
+
+# Step 8: Tweak the X- axis dates
+p <- p + 
+  scale_x_datetime(name = "Date", # Title of the x-axis as you want it to appear 
+                  labels = date_format("%b %d"), # Use the 3 digit month name and day 
+                  date_breaks = "1 month", # major breaks 1 month apart 
+                  date_minor_breaks = "1 week")  # minor breaks 1 week apart (ticks, no text)
+
+# Step 9: Tweak all of the plot and axis size and positions
+p <- p + 
+  theme(axis.text.x = element_text(angle=20, # adjust angle of x axis text to 45 deg 
+                                  size = 10), # adjust the size of the x tick labels
+          axis.title.x = element_text(size = 13), # adjust size of x axis label
+          
+          axis.text.y = element_text(size = 12), # adjust the size of the y axis tick labels
+          axis.title.y = element_text(size = 13, # adjust size of y axis title
+                                      vjust = 0.5), # adjust vertical distance between label and plot
+          
+          plot.title = element_text(size = 18, # adjust the size of the main title
+                                    hjust = 0.05), # adjust horizontal spacing of title (0.5 is center)
+          
+          plot.subtitle = element_text(size = 14), # adjust size of subtitle
+          
+          legend.background = element_rect(color = "black", # draw a black backgrouind
+                                          linetype = "solid")) # draw solid line around legend
+
+p                           
+```
+
+In addition to temporal resolution, the sensors differed in their spatial resolution (figure \@ref(fig:plot-compare-sensors-three-dates)). MODIS had the coarsest resolution with pixel lengths of 250 m. Landsat pixels were 30 m per side. Though the phenocam had the finest resolution (<1 m), the spatial extent captured by the phenocam was much smaller than the extent of the satellite-based methods.
+
+The phenocam data (figure \@ref(fig:plot-compare-sensors-three-dates)c)clearly shows that most trees had not yet leafed out in April 2016. Some evergreen trees are visible. By July, the canopy is fully developed; by November most leaves have fallen, though some red leaves remain. Both Landsat 8 and MODIS show a similar greenup pattern in the NDVI values, though both show large patches with high NDVI in the April and November scenes. It is possible that the green patches represent areas dominated by coniferous trees or that they represent lowland or well-irrigated areas with longer growing seasons.
+
+The differences between the MODIS and Landsat scenes clearly show the importance of spatial resolution on VI results. The patchiness of the landscape is much easier to decipher in Landsat 8 than MODIS. Interestingly, the color patterns do not perfectly align between Landsat 8 and MODIS, which may be partially due to a difference in the reprojection of the data in different coordinate reference systems. 
+
+In the July image of Landsat, a small area with noticeably low NDVI values is visible in the northwest corner. Investigation of satellite imagery revealed that a barn is located approximately in this area. In a future study, we would apply a mask to the human-impacted area around the barn to remove bias in the results.
+
+```{r plot-compare-sensors-three-dates, fig.width = 8, fig.height = 8, fig.cap = "_The seasonal change in vegetation growth can clearly be seen across all three sensors from the beginning to middle to end of the season. For (a) MODIS and (b) Landsat 8, the images represent the NDVI values, with higher NDVI values indicated by green and lower NDVI values indicated by yellow to orange to white. Note that the coordinate reference system for MODIS and Landsat differ, which causes a distortion of the shape of the study extent. Both MODIS and Landsat scenes capture the same study area. (c) For phenocams, the images are RGB photographs._"}
+par(mfrow=c(3,3), 
+    oma=c(1,1,3,1), # changed from 0,0,2,0
+    mar=c(1,1,2,1), 
+    col.axis="white", 
+    col.lab="white", 
+    tck=0,
+    cex.main = 1.5) 
+
+# modis plots
+# plot april_ndvi for modis (plot 1)
+plot(april_ndvi_modis, axes = FALSE, main = "April", legend = FALSE)
+# creating title, only works when placed here; otherwise plots off the page
+title("Change in the Greenness over the Growing Season", 
+      outer = TRUE,
+      cex.main = 2)
+mtext("a. MODIS (NDVI)",
+      side = 2,
+      line = 0,
+      font = 2)
+box(col = "white")
+# plot july_ndvi for modis (plot 2)
+plot(july_ndvi_modis, axes = FALSE, main = "July", legend = FALSE)
+box(col = "white")
+# plot nov_ndvi for modis (plot 3)
+plot(nov_ndvi_modis, axes = FALSE, main = "November")
+box(col = "white")
+
+
+
+# landsat plots
+# plot april_ndvi for landsat (plot 4)
+plot(april_ndvi_landsat, axes = FALSE, legend = FALSE)
+box(col = "white")
+# add label for landsat
+mtext("b. Landsat 8 (NDVI)",
+      side = 2,
+      line = 0,
+      font = 2)
+#plot july_ndvi for landsat (plot 5)
+plot(july_ndvi_landsat, axes = FALSE, legend = FALSE)
+box(col = "white")
+#plot nov_ndvi for landsat (plot 6)
+plot(nov_ndvi_landsat, axes = FALSE)
+box(col = "white")
+
+# phenocam plots
+# plot april_jpeg
+plotImage(april_pc, axes = FALSE, legend = FALSE)
+mtext("c. Phenocam (RGB Image)",
+      side = 2,
+      line = 0,
+      font = 2)
+plotImage(july_pc, axes = FALSE, legend = FALSE)
+plotImage(nov_pc, axes = FALSE, legend = FALSE)
+
+
+
+```
+
+## NDVI versus GCC
+
+For Landsat 8, both NDVI and GCC vegetation indices were calculated. The relationship between the two indices was very weak (figure \@ref(fig:plot-landsat-gcc-versus-ndvi)a), though the relationship seems to be grouped by season. The dates for each season were derived from phenocam data, using the Elmore fit and Klosterman phenophase methods [table 1; @Klosterman2014]. It is likely that the poor relationship of GCC to NDVI and the seasonal groupings in figure \@ref(fig:plot-landsat-gcc-versus-ndvi)a are due to the lack of seasonal pattern of GCC in the Landsat data (figure \@ref(fig:plot-landsat-gcc-versus-ndvi)b). While GCC was an effective metric for tracking plant phenology with the phenocam data, the modified GCC for Landsat was not effective. Landsat GCC showed no seasonal trend in greenness.
+
+```{r plot-landsat-gcc-versus-ndvi, fig.cap = "_(a) A plot of NDVI and GCC for landsat shows a poor relationship between the two VIs, though values seem grouped by season (see legend). (b) The poor relationship of GCC to NDVI in landsat may be due to GCC not showing a clear seasonal pattern in GCC._"}
+# Plot of Landsat GCC versus NDVI
+
+p3 <- ggplot(data = summary_ls2, aes(x = mean_ndvi, y = GCC,
+                        col = season)) + 
+    geom_point(size = 4,
+               alpha = 0.9) + 
+    scale_colour_manual(values = c("winter" = "steelblue3",
+                                   "spring" = "springgreen3",
+                                   "summer" = "darkgreen",
+                                   "autumn" = "darkorange1"),
+                        name = "Seasons") +
+    ylim(0.32, 0.35) +
+    theme_bw() +
+    theme(plot.title = element_text(size = 18,
+                                    hjust = 0.1),
+          legend.text = element_text(size = 14)) + 
+    labs(title ="a. Comparison of GCC and NDVI for Landsat",
+         x = "Mean NDVI",
+         y = "Mean GCC")
+
+
+
+# Plot of Landsat versus Phenocam GCC
+
+p4 <- ggplot(data = subset(full_summary,
+                           data_source!="modis"), 
+             aes(x = date, y = GCC_all,
+                 group = factor(data_source), # group the data by the source
+                                      colour = factor(data_source)), # define colors by data source
+             size = 4) +
+    geom_point()
+
+# Step 2: Manually define the colors and sizes for the legend
+p4 <- p4 + scale_color_manual(name = "Data Source", # set legend name
+                       labels = c("Landsat 8", # set legend object labels
+                                 "Phenocam"), # Set phenocam legend label blank
+                       values = c("landsat" = "firebrick1", # set what color each data source is
+                                  "PhenoCam" = "forestgreen")) + # set PhenoCam point color to white
+      scale_size_manual(name = "Data Source", # set the legend name (to merge use same as color)
+                      labels = c("Landsat 8", # set legend object labels
+                                 "Phenocam"), # Set phenocam legend label blank
+                      values = c("landsat" = 4, # set the size of the legend objects
+                                "PhenoCam" = 2)) +
+      guides(colour = guide_legend("Data Source"), # merge size and color legend
+             size = guide_legend("Data Source"))
+
+# Step 3: Set the Titles and labels for plot and X and left Y axes
+p4 <- p4 +  
+    labs(title = "b. Vegetation Change (GCC) at Harvard Forest using\nLandsat and Phenocam Imagery", # set main title
+      subtitle = "March 30 - Dec 1, 2016", #set subtitle
+      x = "Date", # set x axis label
+      y = "GCC") # set left y axis label
+    
+# Step 4: Set the theme
+p4 <- p4 + theme_classic() # white background with open plot boundaries
+
+# Step 5: Tweak the X- axis dates
+p4 <- p4 +
+  scale_x_datetime(name = "Date", # Title of the x-axis as you want it to appear
+                  labels = date_format("%b %d"), # Use the 3 digit month name and day
+                  date_breaks = "1 month", # major breaks 1 month apart
+                  date_minor_breaks = "1 week")  # minor breaks 1 week apart (ticks, no text)
+
+# Step 6: Tweak all of the plot and axis size and positions
+p4 <- p4 +
+  theme(axis.text.x = element_text(angle=20, # adjust angle of x axis text to 45 deg
+                                  size = 10), # adjust the size of the x tick labels
+          axis.title.x = element_text(size = 13), # adjust size of x axis label
+
+          axis.text.y = element_text(size = 12), # adjust the size of the y axis tick labels
+          axis.title.y = element_text(size = 13, # adjust size of y axis title
+                                      vjust = 0.5), # adjust vertical distance between label and plot
+
+          plot.title = element_text(size = 18, # adjust the size of the main title
+                                    hjust = 0.05), # adjust horizontal spacing of title (0.5 is center)
+
+          plot.subtitle = element_text(size = 14), # adjust size of subtitle
+
+          legend.background = element_rect(color = "black", # draw a black backgrouind
+                                          linetype = "solid")) # draw solid line around legend
+grid.arrange(p3, p4,
+             ncol = 1)
+
+```
+
+___Table 1.___
+
+Season | Start Date (YYYY-MM-DD) | End Date (YYYY-MM-DD)  
+------ | ---------- | --------   
+Winter | ... | `r Greenup_date`   
+Spring | `r Greenup_date` | `r Maturity_date`   
+Summer | `r Maturity_date` | `r Senescence_date`   
+Autumn | `r Senescence_date` | `r Dormancy_date`   
+Winter | `r Dormancy_date` | ...   
+
+
+# Conclusion
+
+Tracking plant phenology is important for understanding how biotic systems are shifting in response to environmental drivers. The results of our research show that multiple remote sensing methods can produce similar temporal patterns in plant greenness. All three sensors showed increases in plant growth by June 1 and decreases around October 1. There appeared to be a pattern that MODIS had higher values during the early and late parts of the growing season, which matches observations by @Hufkens2012. The difference in MODIS versus Landsat could be due to the slight differences in the spectral bandwidths used to calculate NDVI or are a function of the spatial resolution of the data.
+
+We were surprised that there was such a poor relationship between NDVI and GCC for the Landsat data. We expected to see a positive relationship, such that high NDVI values correlated with high GCC values. We originally intended to fit a regression to the NDVI:GCC relationship in order to transform the y-axis in figure \@ref(fig:plot-overall-temporal-pattern) and get approximate NDVI values for the phenocam data. We conclude that GCC is an inappropriate vegetation index for spectral data. 
+
+To understand the relationship between NDVI and GCC, other researchers have used infrared-capable phenocams  to calculate a modified NDVI value by comparing digital numbers from RGB images to the digital numbers of NIR + RGB images [@Filippa2018]. @Filippa2018 found that modified NDVI values from phenocams were comparable to NDVI from MODIS. Additionally @Filippa2018 found that GCC and NDVI captured different phenological processes, such that GCC was more sensitive to leaf color change in the autumn, while NDVI was sensitive to leaf-off date. In future analyses, we would like to include NIR + RGB imagery to calculate modified NDVI for phenocam data.
+
+All three methods were effective at capturing phenological greenness curves of the deciduous broadleaf forest. Though MODIS data is heavily used in remote sensing phenology studies, we found that the data processing was computationally intensive and inconvenient. Additionally, MODIS had the poorest spatial resolution of our three sensors. For these reasons, we recommend using Landsat or phenocam data to address phenological research questions. Landsat is most appropriate when evaluating large areas, areas where NDVI is preferred to GCC (such as areas where plant growth is not a function of greenness) or areas that don't have access to a phenocam. Phenocams are most appropriate for areas where high spatial or temporal resolution are needed (such as areas with rapid greenup or brown-down). Each of the remote sensing methods tested in our analysis provide advantages and disadvantages that need to be considered when choosing a remote sensing tool to measure phenology.
+
+# References
+

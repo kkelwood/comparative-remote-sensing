@@ -1,0 +1,581 @@
+---
+title: "Data Processing Scripts"
+author: "Kelsey Elwood"
+date: "12/16/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      message = FALSE, 
+                      warning = FALSE)
+
+options(stringsAsFactors = FALSE)
+```
+
+```{r set-working-directory}
+setwd("/Users/elwoodk/Google_Drive/courses/earth-analytics/final-project/")
+```
+
+```{r load-libraries}
+# load packages
+library (ggplot2)
+library(lubridate)
+library(dplyr)
+library(raster)
+library(rgdal)
+library(ggmap) # For plotting
+library(gridExtra) # To plot ggplots side-by-side
+library(scales) # Required for "date_format" function in ggplot date axes
+library(phenopix) # For analysis of phenocam imagery
+library(jpeg) # To read in jpg images
+
+# set strings as factors to false
+options(stringsAsFactors = FALSE)
+
+```
+
+## Process phenocam data
+
+```{r check_create_dir-function}
+check_create_dir <- function(dir_path) {
+    if(dir.exists(dir_path)) { # if directory DOES exist...
+    print("the directory already exists") # ... print this statement
+    }
+    if(!dir.exists(dir_path)) { # if directory does NOT exist (!)...
+    dir.create(dir_path) # ... create the directory and...
+    print("the directory has been created") # ...print this statement
+    }
+}
+```
+
+```{r create-recommended-subfolders}
+# Create subfolders recommended by the `phenopix` package in the computation folder
+phenopix_folders <- c("phenocam/RGB/IMG/", "phenocam/RGB/VI/", "phenocam/RGB/REF/", "phenocam/RGB/ROI/")
+for (i in phenopix_folders){
+    check_create_dir(i)
+}
+
+```
+
+```{r data-download-info}
+# Data downloaded from the Phenocam Network
+## Site: harvardlph
+## Time of day: 10 am to 2 pm
+## Dates: April 1 to Dec. 1, 2016
+
+# Step 1: Save images to the "IMG/" folder created above
+# Step 2: Choose one image to become your reference image and copy to the "REF/" folder. This image will be used as the backdrop to draw the region of interest.
+
+```
+
+```{r draw-ROI, eval = FALSE}
+# To determine the region of interest (ROI) of the image, use the `DrawROI` function of the `phenopix` package. Click the vertices of the desired ROI. For macs, push the `esc` button on the keyboard to indicate when you are finished. This process only needs to be completed once.
+
+# The output of the code will be an object of class "list" with the default name of "roi.data.Rdata". I know that the name of the output object doesn't follow Hadley Whickam's style guide by using periods in the object name, but it did not seem worth it to veer from the vignette and documentation of the "phenopix" package and the default naming schemes.
+
+DrawROI(path_img_ref = "REF/harvardlph_2016_07_15_120007.jpg", # the location of your reference image
+        path_ROIs = "ROI/", # the path in your computer where to store RData with ROI properties
+        nroi = 1, # number of ROIs
+        roi.names = c("canopy"), # list of ROI names (in order)
+        file.type = ".jpg" # the extention syntax of the reference file) 
+```
+
+```{r extractVIs, eval = FALSE, cache = TRUE}
+# To calculate the vegetation indices (VIs), use the following code. This process only needs to be done once. It takes between 10 and 30 minutes depending on the number of images and their quality (number of pixels in the image).
+
+# The output of the code produces an R object called "VI.data.Rdata". 
+
+extractVI_start_time <- Sys.time()
+extractVIs(img.path = "phenocam/RGB/IMG/", 
+           roi.path = "phenocam/RGB/ROI/", 
+           vi.path = "phenocam/RGB/VI/", 
+           roi.name = "canopy", # the name of the ROI from the roi.data file
+           plot = TRUE, # return a plot with R, G, and B indexes
+           spatial = FALSE, # VI is averaged over the entire ROI (and not for each pixel individually)
+           date.code = "yyyy_mm_dd_HHMM", # harvardlph date code structure embedded in file names
+           npixels = 1, # The number of pixels to group for analysis. This essentially changes the resolution of the photo. A value of 1 means that all pixels are analyzed. A value of 2 means that groups of 2x2 pixels will be aggregated
+           file.type = ".jpg", # match the extension of the images in the "IMG" folder
+           bind = TRUE,
+           log.file = "phenocam/RGB/VI/", 
+           begin = NULL)
+extractVI_end_time <- Sys.time()
+extractVI_process_time <- extractVI_end_time - extractVI_start_time
+```
+
+```{r filter-vi-data}
+# Load the VI file created in `extractVIs`. The default name for the file is "VI.data.Rdata"
+load("phenocam/RGB/VI/VI.data.Rdata")
+
+VI_df <- as.data.frame(VI.data$canopy) # To view as dataframe
+
+# Filtering the data will remove images that don't meet certain criteria
+filter_start_time <- Sys.time()
+filtered_VI <- autoFilter(data = unique(VI.data$canopy),
+                          dn=c('ri.av', 'gi.av', 'bi.av'), # the names of the columns in the VI.data file that contain the average Red, Green, and Blue (in order) digital numbers 
+                          brt = 'bri.av', # the name of the overall average brightness column. Brightness is the sum of R + G + B digital numbers
+                          filter = c("night", "max"), # The filtering methods used. "Night" removes images below a Green Chromatic Coordinate (GCC) threshold of 0.2. "Max" averages the 90th percentile GCC of a 3-day moving window. The filters are applied in order, which means that in this case, the values of "max.filter" will be the values we want to use in the rest of the analysis
+                          na.fill = FALSE, # TRUE means that NA values are replaced with interpolated values. This should be irrelevant to our data set as we should not have any NA values.
+                          plot = FALSE) # Don't plot the results
+filter_end_time <- Sys.time()
+filter_processing_time <- filter_end_time - filter_start_time
+
+# convert the filtered_VI object from class 'zoo' to class 'data.frame'
+filtered_VI_df <- convert(filtered_VI, year='2016') %>% 
+    mutate(DATE_POSIX = as.POSIXct(doy, format = "%Y-%m-%d")) %>% # create new column in dataframe of class POSIX
+
+```
+
+```{r write-filtered-csv, eval = FALSE}
+# Create a CSV file in the directory. Only needs to be done once.
+write.csv(x = filtered_VI_df, 
+          file = paste0(getwd(), "/phenocam/RGB/VI/filtered_VI_df.csv"))
+
+```
+
+# Plot: Filtered GCC for phenocams
+```{r plot-filtered_VI}
+ggplot(data = filtered_VI_df, aes(x = DATE_POSIX, y = max.filtered)) +
+    geom_point(color = "forestgreen") +
+    scale_x_datetime(name = "Date",
+                     labels = date_format("%m/%d"), 
+                     date_breaks = "2 weeks",
+                     date_minor_breaks = "1 week") +
+    ylab("Greenness Color Coordinate (GCC)") + 
+    theme_bw(base_size = 18) + 
+    theme(axis.text.x = element_text(angle = 45,
+                                     hjust = 1),
+          plot.title = element_text(size = 20,
+                                    hjust = 0)) +
+    labs(title ="Filtered GCC for Phenocams",
+         subtitle = "Harvard Forest, April 1 - Dec. 1, 2016")
+
+```
+
+
+# Plot: Comparison of phenophase methods
+*Might need to add title to this plot*
+```{r fit-comparisons, cache=TRUE}
+# There are many ways to fit a curve to the phenology data and to extract dates. In "phenopix", there are 5 built-in methods to set a curve (called "fit") and 4 methods of extracting phenophases from the curves.
+
+# To learn more about the different curve and phenophase methods, see Filippa et al. (2016)
+
+# The code below produces a comparison of the different curve fits and phenophase methods
+par(cex.main = 1, 
+    cex.lab = 1,
+    mar = c(0,0,3,0))
+fit_comparison <- greenExplore(filtered_VI$max.filtered)
+plotExplore(fit_comparison)
+
+```
+
+```{r calculate-curve-fits-and-phenophases, cache = TRUE}
+## I chose the Elmore fitting method because it had one of the lowest RMSE values appeared to be a parsimonious curve. I chose the Klosterman phenophase method because it that clearly describes each phenophase.
+
+## elmore + klosterman
+fit_elmore_klosterman <- greenProcess(ts = filtered_VI$max.filtered,
+                                      fit = 'elmore', 
+                                      threshold = 'klosterman',
+                                      plot=FALSE)
+
+```
+
+```{r summary-of-fits, eval=FALSE}
+summary(fit_elmore_klosterman)
+
+# Results (day of year):
+## Greenup: 127
+## Maturity: 152
+## Senescence: 284
+## Dormancy: 301
+```
+
+```{r elmore-curve-klosterman-thresholds}
+dev.off()
+plot(fit_elmore_klosterman, 
+     type='p', 
+     pch=20, 
+     col='grey',
+     xlab = "Day of Year",
+     ylab = "GCC",
+     main = "Elmore Curve with Klosterman Thresholds")
+```
+
+
+***
+# Calculate MODIS NDVI
+
+```{r basic-data-information}
+# From Kelly's notes: "HDF5 scenes had to be converted to a Geotiff to be used in R, the best way to do this was to use the USGS MODIS Reprojection Tool. This was best run on a windows computer since GDAL translate is not a base tool with an apple product. The tool is run through the command line and it easily explained in the MODIS Reprojection Tool manual on the USGS website.""
+```
+
+```{r define-modis-crs-and-extent, eval = FALSE}
+# add a MODIS coordinate reference system
+modis_brick_crs <- raster("data/Bricks/april_six.tif")
+# forest boundary that MODIS bricks will be cropped to 
+# Define forest boundary as raster
+
+# reproject forest boundary to sinusoidal to match MODIS CRS
+forest_boundary_sin <- spTransform(forest_boundary, CRS=crs(modis_brick_crs))
+```
+
+```{r modis-april, eval = FALSE}
+# creating NDVI from the Bricks file (these are the pre-cropped MODIS scenes after being converted to Geotiffs from HDF5 files) this note applies to all chunks lines 33-124
+
+# calling in April sixth data from bricks folder
+brick_april_six <- brick("data/Bricks/april_six.tif")
+# creating an NDVI brick for the entire April 6th scene
+april_ndvi <- (brick_april_six[[5]] - brick_april_six[[4]]) / (brick_april_six[[5]] + brick_april_six[[4]])
+# cropping the total NDVI scene to the sinusoidal Harvard Forest Boundary and saving the output to a cropped NDVI folder for easier plotting in the future
+crop_april_ndvi <- crop(april_ndvi, forest_boundary_sin, filename = "data/MODIS_crop_ndvi_crop_ndvi/april_ndvi.tif")
+# creating a plot of the NDVI in the beginning of the growing season, April, for Harvard Forest
+plot(crop_april_ndvi, axes = FALSE, main = "April 6 MODIS NDVI Harvard Forest")
+```
+
+```{r modis-may, eval = FALSE}
+# calling in May eighth data from the bricks folder
+brick_may_eight <- brick("data/Bricks/may_eight.tif")
+# creating an NDVI brick for the entire May 8th scene
+may_ndvi <- (brick_may_eight[[5]] - brick_may_eight[[4]]) / (brick_may_eight[[5]] + brick_may_eight[[4]])
+# cropping the total NDVI scene to the sinusoidal Harvard Forest Boundary and saving the output to a cropped NDVI folder for easier plotting in the future
+crop_may_ndvi <- crop(may_ndvi, forest_boundary_sin, filename = "data/MODIS_crop_ndvi/may_ndvi.tif")
+```
+
+```{r modis-june, eval = FALSE}
+# calling in June ninth data from the bricks folder
+brick_june_nine <- brick("data/Bricks/june_nine.tif")
+# creating an NDVI brick for the entire June 9th scene
+june_ndvi <- (brick_june_nine[[5]] - brick_june_nine[[4]]) / (brick_june_nine[[5]] + brick_june_nine[[4]])
+# cropping the total NDVI scene to the sinusoidal Harvard Forest Boundary and saving the output to a cropped NDVI folder for easier plotting in the future
+crop_june_ndvi <- crop(june_ndvi, forest_boundary_sin, filename = "data/MODIS_crop_ndvi/june_ndvi.tif")
+```
+
+```{r modis-july, eval = FALSE}
+# calling in July eleventh data from the bricks folder
+brick_july_eleven <- brick("data/Bricks/july_eleven.tif")
+# creating an NDVI brick for the entire July 11th scene
+july_ndvi <- (brick_july_eleven[[5]] - brick_july_eleven[[4]]) / (brick_july_eleven[[5]] + brick_july_eleven[[4]])
+# cropping the total NDVI scene to the sinusoidal Harvard Forest Boundary and saving the output to a cropped NDVI folder for easier plotting in the future
+crop_july_ndvi <- crop(july_ndvi, forest_boundary_sin, filename = "data/MODIS_crop_ndvi/july_ndvi.tif")
+# plotting the middle of the growing season NDVI, July, for Harvard Forest
+plot(crop_july_ndvi, axes = FALSE, main = "July 11 MODIS NDVI Harvard Forest")
+```
+
+```{r modis-august, eval = FALSE}
+# calling in August twelth data from the bricks folder
+brick_aug_twlve <- brick("data/Bricks/august_twlve.tif")
+# creating an NDVI brick for the entire August 12th scene
+aug_ndvi <- (brick_aug_twlve[[5]] - brick_aug_twlve[[4]]) / (brick_aug_twlve[[5]] + brick_aug_twlve[[4]])
+# cropping the total NDVI scene to the sinusoidal Harvard Forest Boundary and saving the output to a cropped NDVI folder for easier plotting in the future
+crop_aug_ndvi <- crop(aug_ndvi, forest_boundary_sin, filename = "data/MODIS_crop_ndvi/aug_ndvi.tif")
+```
+
+```{r modis-september, eval = FALSE}
+# calling in September twenty ninth data from the bricks folder
+brick_sept_twnty_nine <- brick("data/Bricks/september_twnty_nine.tif")
+# creating an NDVI brick for the entire September 29th scene
+sept_ndvi <- (brick_sept_twnty_nine[[5]] - brick_sept_twnty_nine[[4]]) / (brick_sept_twnty_nine[[5]] + brick_sept_twnty_nine[[4]])
+# cropping the total NDVI scene to the sinusoidal Harvard Forest Boundary and saving the output to a cropped NDVI folder for easier plotting in the future
+crop_sept_ndvi <- crop(sept_ndvi, forest_boundary_sin, filename = "data/MODIS_crop_ndvi/sept_ndvi.tif")
+```
+
+```{r modis-october, eval = FALSE}
+# calling in October fifteenth data from the bricks folder
+brick_oct_fiftn <- brick("data/Bricks/october_fiftn.tif")
+# creating an NDVI brick for the entire October 15th scene
+oct_ndvi <- (brick_oct_fiftn[[5]] - brick_oct_fiftn[[4]]) / (brick_oct_fiftn[[5]] + brick_oct_fiftn[[4]])
+# cropping the total NDVI scene to the sinusoidal Harvard Forest Boundary and saving the output to a cropped NDVI folder for easier plotting in the future
+crop_oct_ndvi <- crop(oct_ndvi, forest_boundary_sin, filename = "data/MODIS_crop_ndvi/oct_ndvi.tif")
+```
+
+```{r modis-november, eval = FALSE}
+# calling in November sixteenth data from the bricks folder
+brick_nov_sixtn <- brick("data/Bricks/november_sixtn.tif")
+# creating an NDVI brick for the entire Novemver 16th scene
+nov_ndvi <- (brick_nov_sixtn[[5]] - brick_nov_sixtn[[4]]) / (brick_nov_sixtn[[5]] + brick_nov_sixtn[[4]])
+# cropping the total NDVI scene to the sinusoidal Harvard Forest Boundary and saving the output to a cropped NDVI folder for easier plotting in the future
+crop_nov_ndvi <- crop(nov_ndvi, forest_boundary_sin, filename = "data/MODIS_crop_ndvi/nov_ndvi.tif")
+# plotting the end of the growing season NDVI , November, for Harvard Forest
+plot(crop_nov_ndvi, axes = FALSE, main = "November 16 NDVI Harvard Forest")
+```
+
+```{r modis-december, eval = FALSE}
+# calling in December second data from the bricks folder
+brick_dec_two <- brick("data/Bricks/december_two.tif")
+# creating an NDVI brick for the entire December 2nd scene
+dec_ndvi <- (brick_dec_two[[5]] - brick_dec_two[[4]]) / (brick_dec_two[[5]] + brick_dec_two[[4]])
+# cropping the total NDVI scene to the sinusoidal Harvard Forest Boundary and saving the output to a cropped NDVI folder for easier plotting in the future
+crop_dec_ndvi <- crop(dec_ndvi, forest_boundary_sin, filename = "data/MODIS_crop_ndvi/dec_ndvi.tif")
+```
+
+```{r modis-to-dataframe, eval = FALSE}
+# creating tables from the cropped NDVI for each month in order to find the minimum, maximum, and mean NDVI value for each month during the months during the grow season
+april_six_1_df <- as.data.frame(crop_april_ndvi, row.names = NULL, optional = FALSE)
+may_eight_df <- as.data.frame(crop_may_ndvi, row.names = NULL, optional = FALSE)
+june_nine_df <- as.data.frame(crop_june_ndvi, row.names = NULL, optional = FALSE)
+july_eleven_df <- as.data.frame(crop_july_ndvi, row.names = NULL, optional = FALSE)
+aug_twlve_df <- as.data.frame(crop_aug_ndvi, row.names = NULL, optional = FALSE)
+sept_twnty_nine_df <- as.data.frame(crop_sept_ndvi, row.names = NULL, optional = FALSE)
+oct_sixtn_df <- as.data.frame(crop_oct_ndvi, row.names = NULL, optional = FALSE)
+nov_fiftn_df <- as.data.frame(crop_nov_ndvi, row.names = NULL, optional = FALSE)
+dec_two_df <- as.data.frame(crop_dec_ndvi, row.names = NULL, optional = FALSE)
+```
+
+
+***
+# Process Landsat data
+```{r load-source-landsat-functions}
+# load landsat vegetation processing functions
+source("landsat/jaeger-wk14-landsat-functions.R")
+
+```
+
+```{r define-function-input-variables, eval = FALSE}
+### SKIP if LANDSAT greenness summary csv has been created
+
+# Define variables for the [calc_landsat_green_stats] function 
+
+# define the Harvard Forest extent in Decimal Degrees
+har_ext_dd <- c(-72.1915, -72.1694, 42.53676, 42.5532)
+# Define the path to the folder containing unzipped landsat scenes from Earth Explorer
+in_path <- "data/"
+# Define the number of characters to get to the last 2 digits of the year of the file
+num_char_YY <- nchar("data/LC0801203020")
+# Define a label to be input for each row in the "data_source" column in the summary csv
+label <- "landsat-scenes-2016-harvard-forest"
+# Define the path to how the output csv summary should be saved
+out_path <- "outputs/ls-2016-harvard-green-summary1.csv"
+
+
+
+```
+
+```{r calc-NDVI-GCC-landsat-summary, eval = FALSE}
+### SKIP if LANDSAT greenness summary csv has been created
+
+# Takes approximately 3-4 minutes to run 3 landsat bricks
+
+# calculate NDVI mean, min, max, and greeness for each Landsat Scene downloaded for Harvard Forest and save as a CSV file in a user-defined path
+
+start_time <- Sys.time()
+calc_landsat_green_stats(folder_path = in_path, # set input file path to folder contain landsat imagery
+                        st_ext_dd = har_ext_dd, # set the study extent area in Decimal Degrees
+                        num_char_to_year = num_char_YY, # set number of characters to last 2 year digits
+                        data_source = label, # set a label for the location or processing date
+                        output_path = out_path) # set a path to where the csv should be saved
+
+stop_time <- Sys.time()
+calc_green_time <- stop_time - start_time
+calc_green_time
+```
+
+## Look at Individual Landsat scenes in RGB and NDVI
+
+
+
+```{r forest-boundary-utm}
+# Convert the study area extent to UTM to be compatible with Landsat
+forest_boundary_utm <- spTransform(forest_boundary, crs(ls_mar30))
+```
+
+# March 30
+```{r open-crop-clean-mar30-lsbrick, cache = TRUE}
+landsat
+# open the landsat tifs and convert to a brick
+ls_mar30 <- tiff_to_brick("landsat/data/LC080130302016033001T1-SC20171108154512/")
+
+
+
+# crop to the study area extent
+ls_mar30 <- crop(ls_mar30, forest_boundary_utm) 
+
+# scale landsat data by the scale factor
+ls_mar30 <- ls_mar30 * 0.0001
+
+# open the cloud mask layer for full scene
+ls_mar30_cloud_mask_o <- raster("data/LC080130302016033001T1-SC20171108154512/LC08_L1TP_013030_20160330_20170223_01_T1_pixel_qa.tif")
+
+# crop cloud mask to the landsat study area
+ls_mar30_cloud_mask <- crop(ls_mar30_cloud_mask_o, forest_boundary_utm)
+
+# Set any pixels with medium to high confidence of clouds, water, or mix to NA
+# https://landsat.usgs.gov/landsat-surface-reflectance-quality-assessment
+# 322 = Clear terrain, low confidence cloud, low confidence cirrus
+# 324 = Water, low confidence cloud, low confidence cirrus
+# anything greater than 322 has greater chance of clouds or water may be present
+ls_mar30_cloud_mask[ls_mar30_cloud_mask > 322 ] <- NA
+
+# Mask the cloudy pixels with NA values 
+ls_mar30 <- mask(ls_mar30, mask = ls_mar30_cloud_mask)
+
+```
+
+```{r Plot-RBG-Landsat-mar30}
+
+plotRGB(ls_mar30, 
+        r = 4, g = 3, b = 2,
+        axes = TRUE,
+        stretch = "lin",
+        main = " Landsat RGB imagery of Harvard Forest \n March 30, 2016, 30 m resolution",
+        col.axis = "white",
+        col.lab = "white",
+        tck = 0)
+box(col = "white")
+
+
+```
+
+```{r Plot-Ndvi-Landsat-mar30, fig.width=6, fig.height=6}
+
+# calculate the NDVI for the Landsat study area
+ls_mar30_NDVI <- overlay(ls_mar30[[5]], # NIR band
+                          ls_mar30[[4]], # Red band
+                          fun = normalized_diff)
+
+par(oma = c(0,0,0,0))
+plot(ls_mar30_NDVI,
+     main = " Landsat-derived NDVI at Harvard Forest \n March 30, 2016, 30 m resolution")
+text(x = 733500, y = 4714500)
+mtext("NDVI Values",
+      side = 4,
+      line = 2,
+      adj = 0.3,
+      outer = FALSE,
+      padj = -9.5,
+      las = 2)
+```
+
+
+# July 13
+
+```{r open-crop-clean-jul13-lsbrick, cache = TRUE, eval = FALSE}
+# open the landsat tifs and covert to a brick
+ls_jul13 <- tiff_to_brick("data/LC080120302016071301T1-SC20171108154538/")
+
+# Convert the study area extent to UTM to be compatible with Landsat
+forest_boundary_utm <- spTransform(forest_boundary, crs(ls_jul13))
+
+# crop to the study area extent
+ls_jul13 <- crop(ls_jul13, forest_boundary_utm) 
+
+# scale landsat data by the scale factor
+ls_jul13 <- ls_jul13 * 0.0001
+
+# open the cloud mask layer for full scene
+ls_jul13_cloud_mask_o <- raster("data/LC080120302016071301T1-SC20171108154538/LC08_L1TP_012030_20160713_20170222_01_T1_pixel_qa.tif")
+
+# crop cloud mask to the landsat study area
+ls_jul13_cloud_mask <- crop(ls_jul13_cloud_mask_o, forest_boundary_utm)
+
+# Set any pixels with medium to high confidence of clouds, water, or mix to NA
+# https://landsat.usgs.gov/landsat-surface-reflectance-quality-assessment
+# 322 = Clear terrain, low confidence cloud, low confidence cirrus
+# 324 = Water, low confidence cloud, low confidence cirrus
+# anything greater than 322 has greater chance of clouds or water may be present
+ls_jul13_cloud_mask[ls_jul13_cloud_mask > 322 ] <- NA
+
+# Mask the cloudy pixels with NA values 
+ls_jul13 <- mask(ls_jul13, mask = ls_jul13_cloud_mask)
+
+```
+
+```{r Plot-RBG-Landsat-jul13, fig.width=4, fig.height=4}
+
+plotRGB(ls_jul13, 
+        r = 4, g = 3, b = 2,
+        axes = TRUE,
+        stretch = "lin",
+        main = " Landsat RGB imagery of Harvard Forest \n July 13, 2016, 30 m resolution",
+        col.axis = "white",
+        col.lab = "white",
+        tck = 0)
+box(col = "white")
+
+
+```
+
+```{r Plot-Ndvi-Landsat-jul13, fig.width=6, fig.height=6}
+
+# calculate the NDVI for the Landsat study area
+ls_jul13_NDVI <- overlay(ls_jul13[[5]], # NIR band
+                          ls_jul13[[4]], # Red band
+                          fun = normalized_diff)
+plot(ls_jul13_NDVI,
+     main = " Landsat-derived NDVI at Harvard Forest \n July 13, 2016, 30 m resolution")
+text(x = 733500, y = 4714500)
+mtext("NDVI Values",
+      side = 4,
+      line = 2,
+      adj = 0.3,
+      outer = FALSE,
+      padj = -9.5,
+      las = 2)
+
+```
+
+
+# November 18
+```{r open-crop-clean-nov18-lsbrick, cache = TRUE}
+# open the landsat tifs and covert to a brick
+ls_nov18 <- tiff_to_brick("data/LC080120302016111801T1-SC20171108154504/")
+
+# Convert the study area extent to UTM to be compatible with Landsat
+forest_boundary_utm <- spTransform(forest_boundary, crs(ls_nov18))
+
+# crop to the study area extent
+ls_nov18 <- crop(ls_nov18, forest_boundary_utm) 
+
+# scale landsat data by the scale factor
+ls_nov18 <- ls_nov18 * 0.0001
+
+# open the cloud mask layer for full scene
+ls_nov18_cloud_mask_o <- raster("data/LC080120302016111801T1-SC20171108154504/LC08_L1TP_012030_20161118_20170219_01_T1_pixel_qa.tif")
+
+# crop cloud mask to the landsat study area
+ls_nov18_cloud_mask <- crop(ls_nov18_cloud_mask_o, forest_boundary_utm)
+
+# Set any pixels with medium to high confidence of clouds, water, or mix to NA
+# https://landsat.usgs.gov/landsat-surface-reflectance-quality-assessment
+# 322 = Clear terrain, low confidence cloud, low confidence cirrus
+# 324 = Water, low confidence cloud, low confidence cirrus
+# anything greater than 322 has greater chance of clouds or water may be present
+ls_nov18_cloud_mask[ls_nov18_cloud_mask > 322 ] <- NA
+
+# Mask the cloudy pixels with NA values 
+ls_nov18 <- mask(ls_nov18, mask = ls_nov18_cloud_mask)
+
+```
+
+```{r Plot-RBG-Landsat-Nov18, fig.width=4, fig.height=4}
+
+plotRGB(ls_nov18, 
+        r = 4, g = 3, b = 2,
+        axes = TRUE,
+        stretch = "lin",
+        main = " Landsat RGB imagery of Harvard Forest \n November 18, 2016, 30 m resolution",
+        col.axis = "white",
+        col.lab = "white",
+        tck = 0)
+box(col = "white")
+
+
+```
+
+```{r Plot-Ndvi-Landsat-Nov18, fig.width=6, fig.height=6}
+
+# calculate the NDVI for the Landsat study area
+ls_nov18_NDVI <- overlay(ls_nov18[[5]], # NIR band
+                          ls_nov18[[4]], # Red band
+                          fun = normalized_diff)
+plot(ls_nov18_NDVI,
+     main = " Landsat-derived NDVI at Harvard Forest \n November 18, 2016, 30 m resolution6")
+text(x = 733500, y = 4714500)
+mtext("NDVI Values",
+      side = 4,
+      line = 2,
+      adj = 0.3,
+      outer = FALSE,
+      padj = -9.5,
+      las = 2)
+```
+

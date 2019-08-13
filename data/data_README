@@ -1,3 +1,7 @@
-Note on Satellite Data
+# Notes on Data
 
+## Satellite data: Landsat and MODIS
 The data used in the analysis is not uploaded to GitHub because the files are large. To access MODIS and Landsat data, please visit USGS Earth Explorer: https://earthexplorer.usgs.gov/
+
+## PhenoCam data
+In the phenocam/RGB/IMG folder
